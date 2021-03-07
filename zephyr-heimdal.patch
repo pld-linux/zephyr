@@ -1,0 +1,150 @@
+--- zephyr-3.1.2/lib/ZMkAuth.c.orig	2013-10-28 05:21:44.000000000 +0100
++++ zephyr-3.1.2/lib/ZMkAuth.c	2021-03-05 21:41:58.211169636 +0100
+@@ -126,10 +126,10 @@
+     keyblock = Z_credskey(creds);
+ 
+     if (Z_keys_head &&
+-	Z_keys_head->keyblock->enctype == keyblock->enctype &&
+-	Z_keys_head->keyblock->length == keyblock->length &&
+-	memcmp(Z_keys_head->keyblock->contents, keyblock->contents,
+-	       keyblock->length) == 0) {
++	Z_enctype(Z_keys_head->keyblock) == Z_enctype(keyblock) &&
++	Z_keylen(Z_keys_head->keyblock) == Z_keylen(keyblock) &&
++	memcmp(Z_keydata(Z_keys_head->keyblock), Z_keydata(keyblock),
++	       Z_keylen(keyblock)) == 0) {
+ 	/*
+ 	 * Optimization: if the key hasn't changed, replace the current entry,
+ 	 * rather than make a new one.
+--- zephyr-3.1.2/lib/ZDumpSession.c.orig	2013-10-28 05:21:44.000000000 +0100
++++ zephyr-3.1.2/lib/ZDumpSession.c	2021-03-05 22:11:03.011717241 +0100
+@@ -42,7 +42,7 @@
+     for (key = Z_keys_head; key != NULL; key = key->next) {
+ 	num_keys++;
+ 	len += 4 + 4;  /* enctype, length */
+-	len += key->keyblock->length;  /* contents */
++	len += Z_keylen(key->keyblock);  /* contents */
+     }
+ #endif
+ 
+@@ -56,10 +56,10 @@
+ #ifdef HAVE_KRB5
+     *((uint32_t *)ptr) = htonl(num_keys); ptr += 4;
+     for (key = Z_keys_tail; key != NULL; key = key->prev) {
+-	*((uint32_t*) ptr) = htonl(key->keyblock->enctype); ptr += 4;
+-	*((uint32_t*) ptr) = htonl(key->keyblock->length); ptr += 4;
+-	memcpy(ptr, key->keyblock->contents, key->keyblock->length);
+-	ptr += key->keyblock->length;
++	*((uint32_t*) ptr) = htonl(Z_enctype(key->keyblock)); ptr += 4;
++	*((uint32_t*) ptr) = htonl(Z_keylen(key->keyblock)); ptr += 4;
++	memcpy(ptr, Z_keydata(key->keyblock), Z_keylen(key->keyblock));
++	ptr += Z_keylen(key->keyblock);
+     }
+ #endif
+ 
+@@ -110,12 +110,12 @@
+ 	    free(key);
+ 	    return (EINVAL);
+ 	}
+-	ret = krb5_init_keyblock(Z_krb5_ctx, enctype, keylength, &key->keyblock);
++	ret = Z_krb5_init_keyblock(Z_krb5_ctx, enctype, keylength, &key->keyblock);
+ 	if (ret) {
+ 	    free(key);
+ 	    return ret;
+ 	}
+-	memcpy((char *)key->keyblock->contents, buffer, keylength);
++	memcpy((char *)Z_keydata(key->keyblock), buffer, keylength);
+ 	buffer += keylength; len -= keylength;
+ 	/* Just set recent times. It means we might not be able to
+ 	   retire the keys, but that's fine. */
+--- zephyr-3.1.2/lib/Zinternal.c.orig	2013-10-28 05:21:44.000000000 +0100
++++ zephyr-3.1.2/lib/Zinternal.c	2021-03-06 08:54:08.562681386 +0100
+@@ -1420,3 +1420,30 @@
+ #endif
+ }
+ #endif
++
++#ifdef HAVE_KRB5
++krb5_error_code
++Z_krb5_init_keyblock(krb5_context context,
++	krb5_enctype type,
++	size_t size,
++	krb5_keyblock **key)
++{
++#ifdef HAVE_KRB5_CREDS_KEYBLOCK_ENCTYPE
++	return krb5_init_keyblock(context, type, size, key);
++#else
++	krb5_error_code ret;
++	krb5_keyblock *tmp, tmp_ss;
++	tmp = &tmp_ss;
++
++	*key = NULL;
++	Z_enctype(tmp) = type;
++	Z_keylen(tmp) = size;
++	Z_keydata(tmp) = malloc(size);
++	if (!Z_keydata(tmp))
++		return ENOMEM;
++	ret =  krb5_copy_keyblock(context, tmp, key);
++	free(Z_keydata(tmp));
++	return ret;
++#endif
++}
++#endif
+--- zephyr-3.1.2/h/internal.h.orig	2013-10-28 05:21:44.000000000 +0100
++++ zephyr-3.1.2/h/internal.h	2021-03-06 08:52:45.043133850 +0100
+@@ -205,4 +205,9 @@
+ #define Z_tktprinc(tkt)		((tkt)->client)
+ #endif
+ 
++#ifdef HAVE_KRB5
++krb5_error_code Z_krb5_init_keyblock(krb5_context, krb5_enctype, size_t,
++        krb5_keyblock **);
++#endif
++
+ #endif /* __INTERNAL_H__ */
+--- zephyr-3.1.2/server/kstuff.c.orig	2013-10-28 05:21:44.000000000 +0100
++++ zephyr-3.1.2/server/kstuff.c	2021-03-06 08:55:24.682269010 +0100
+@@ -701,33 +701,6 @@
+ 
+     return checksum;
+ }
+-#endif
+-
+-#ifdef HAVE_KRB5
+-krb5_error_code
+-Z_krb5_init_keyblock(krb5_context context,
+-	krb5_enctype type,
+-	size_t size,
+-	krb5_keyblock **key)
+-{
+-#ifdef HAVE_KRB5_CREDS_KEYBLOCK_ENCTYPE
+-	return krb5_init_keyblock(context, type, size, key);
+-#else
+-	krb5_error_code ret;
+-	krb5_keyblock *tmp, tmp_ss;
+-	tmp = &tmp_ss;
+-
+-	*key = NULL;
+-	Z_enctype(tmp) = type;
+-	Z_keylen(tmp) = size;
+-	Z_keydata(tmp) = malloc(size);
+-	if (!Z_keydata(tmp))
+-		return ENOMEM;
+-	ret =  krb5_copy_keyblock(context, tmp, key);
+-	free(Z_keydata(tmp));
+-	return ret;
+-#endif
+-}
+ 
+ void
+ ZSetSession(krb5_keyblock *keyblock) {
+--- zephyr-3.1.2/server/zserver.h.orig	2021-03-06 08:52:57.593065861 +0100
++++ zephyr-3.1.2/server/zserver.h	2021-03-06 08:53:00.516383357 +0100
+@@ -37,8 +37,6 @@
+ extern krb5_keyblock *__Zephyr_keyblock;
+ #define ZGetSession() (__Zephyr_keyblock)
+ void ZSetSession(krb5_keyblock *keyblock);
+-krb5_error_code Z_krb5_init_keyblock(krb5_context, krb5_enctype, size_t,
+-        krb5_keyblock **);
+ #endif
+ 
+ #ifdef HAVE_KRB4
