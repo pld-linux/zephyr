@@ -10,7 +10,7 @@ Summary:	Project Athena's notification service
 Summary(pl.UTF-8):	Usługa powiadomień z Projektu Athena
 Name:		zephyr
 Version:	3.1.2
-Release:	1
+Release:	2
 License:	MIT
 Group:		Libraries
 #Source0Download: https://github.com/zephyr-im/zephyr/releases
