@@ -109,7 +109,7 @@ Statyczna biblioteka Zephyr.
 
 %prep
 %setup -q
-%patch0 -p1
+%patch -P0 -p1
 
 %{__sed} -i -e 's/__DEV__/%{version}/' configure.ac
 
